@@ -1,20 +1,16 @@
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
-#include <dump_parser>
-
-
-char gS_StripperPath[PLATFORM_MAX_PATH];
-
-ArrayList gA_Entites;
-StringMap gSM_EntityList;
+#include <shavit>
+#include <output_info_plugin>
 
 bool gB_GravityActivated[MAXPLAYERS];
 bool gB_Late;
+bool gB_Enabled[MAXPLAYERS] = {true, ...};
 
 float gF_GravityDeactivateTime[MAXPLAYERS];
-float gF_OldGravity[MAXPLAYERS];
-
+float gF_OldGravity[MAXPLAYERS] = {1.0, ...};
+float gF_CurrentGravity[MAXPLAYERS] = {1.0, ...};
 
 enum struct gravity_t
 {
@@ -27,7 +23,7 @@ public Plugin myinfo =
 	name = "Gravity Booster Fix",
 	author = "KiD Fearless",
 	description = "Changes booster boost time depending on players current timescale... Code heavily based off slidybats gravity booster fix plugin.",
-	version = "1.1",
+	version = "2.0",
 	url = "http://steamcommunity.com/id/kidfearless"
 };
 
@@ -40,20 +36,11 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 
 public void OnPluginStart()
 {
-	gA_Entites = new ArrayList(2);
-	gSM_EntityList = new StringMap();
-	GetCommandLineParam("+stripper_path", gS_StripperPath, PLATFORM_MAX_PATH, "addons/stripper");
-	Format(gS_StripperPath, PLATFORM_MAX_PATH, "%s/IO/", gS_StripperPath);
-
-	RegAdminCmd("sm_reparse_gravity", Command_Init, ADMFLAG_BAN);
+	RegConsoleCmd("sm_booster_fix", Command_BooserFix, "Disable the gravity booster fix");
 
 	if(gB_Late)
 	{
-		Init();
-		for(int i = 1; i <= MaxClients; ++i)
-		{
-			OnClientPutInServer(i);
-		}
+		HookTriggers();
 	}
 }
 
@@ -61,124 +48,50 @@ public void OnClientPutInServer(int client)
 {
 	gB_GravityActivated[client] = false;
 	gF_OldGravity[client] = 1.0;
+	gF_CurrentGravity[client] = 1.0;
 	gF_GravityDeactivateTime[client] = 0.0;
-	// SDKHook(client, SDKHook_StartTouch, OnStartTouch);
+	gB_Enabled[client] = true;
 }
 
-public void OnDumpFileReady()
+public void OnEntitiesReady()
 {
-	Init();
-}
-
-Action Init()
-{
-	gA_Entites.Clear();
-	gSM_EntityList.Clear();
-
-	// Get the current map display name
-	char mapName[PLATFORM_MAX_PATH];
-	GetCurrentMap(mapName, PLATFORM_MAX_PATH);
-	GetMapDisplayName(mapName, mapName, PLATFORM_MAX_PATH);
-
-	// Point to the location of the formatted output list
-	char path[PLATFORM_MAX_PATH];
-	FormatEx(path, PLATFORM_MAX_PATH, "%s%s.JSON", gS_StripperPath, mapName);
-	// If an output list couldn't be found stop the operation
-
-	// Open the file for reading, if an error occurs then log it
-	if(!FileExists(path))
-	{
-		LogError("ERROR: COULD NOT FIND IO JSON FILE: %s", path);
-		SetFailState("NO JSON FILE FOUND. UNLOADING PLUGIN");
-		return Plugin_Handled;
-	}
-
-	File ioFile = OpenFile(path, "r");
-
-	if(ioFile == null)
-	{
-		LogError("ERROR: COULD NOT OPEN IO JSON FILE: %s", path);
-		return Plugin_Handled;
-	}
-
-	while(!IsEndOfFile(ioFile))
-	{
-		char buffer[2048];
-		// Import a kv file from the line that was read.
-		ioFile.ReadLine(buffer, 2048);
-		KeyValues kv = new KeyValues("0");
-		if(!kv.ImportFromString(buffer))
-		{
-			LogError("Could not parse kv file: '%s'", buffer);
-			continue;
-		}
-		// Grab it's hammer id
-		char hammerid[24];
-
-		kv.GetString("hammerid", hammerid, 24);
-
-		char counter[12];
-		strcopy(counter, 12, "0");
-		char output[2048];
-		ArrayList outputStringList = new ArrayList(2048);
-		// declare an int counter variable. run the HasString function to both check for it's existance and return it's value.
-		// Then ONCE it's done increment the variable and format it into the counter.
-		for(int i = 0; GetKVString(kv, counter, output, 2048); FormatEx(counter, 12, "%i", ++i))
-		{
-			outputStringList.PushString(output);
-		}
-		delete kv;
-		gravity_t gravity;
-		ParseEntity(outputStringList, gravity);
-		delete outputStringList;
-		// Push the arraylist into the entity list and grab it's index.
-		if( gravity.delay > 0.0)
-		{
-			int index = gA_Entites.PushArray( gravity );
-
-			// associate the index with the entities hammerid
-			gSM_EntityList.SetValue(hammerid, index);
-		}
-	}
-
 	HookTriggers();
-	delete ioFile;
-	return Plugin_Handled;
 }
 
 public Action OnTrigger( const char[] output, int caller, int activator, float delay )
 {
-	if(!IsValidEntity(caller) || !(0 < activator <= MaxClients))
+	if(!IsValidEntity(caller) || !(0 < activator <= MaxClients) || !IsValidEntity(activator))
 	{
+		// LogError("INVALID ENTITY... IGNORING TRIGGER");
 		return Plugin_Continue;
 	}
 	if(GetEntPropFloat(activator, Prop_Data, "m_flLaggedMovementValue") == 1.0)
 	{
+		// LogError("ACTIVATOR IS MOVING NORMALLY... IGNORING TRIGGER");
+		return Plugin_Continue;
+	}
+	if(!gB_Enabled[activator])
+	{
+		// LogError("ACTIVATOR DOESN'T WANT THE FIX... IGNORING TRIGGER");
 		return Plugin_Continue;
 	}
 
-	// Get the hammer id from the ent index
-	int id = GetEntProp(caller, Prop_Data, "m_iHammerID");
-	if(id < 1)
-	{
-		return Plugin_Continue;
-	}
+	Entity ent;
 
-	// Convert it to a string
-	char hammerid[24];
-	IntToString(id, hammerid, 24);
-
-	// use the hammer id to get it's arraylist index
-	int index;
-	if(!gSM_EntityList.GetValue(hammerid, index))
+	if(!GetOutputEntity(caller, ent))
 	{
+		// LogError("BAD ENTITY HANDLE RETURNED... IGNORING TRIGGER");
 		return Plugin_Continue;
 	}
 
 	gravity_t gravity;
-	// Grab the arraylist containing the entities outputs
-	gA_Entites.GetArray(index, gravity);
-	// PrintToConsole(activator, "delay %f, gravity: %f", gravity.delay, gravity.value)
+	if(!ParseEntity(ent, gravity))
+	{
+		// LogError("COULD NOT FIND VALID BOOSTER... IGNORING TRIGGER");
+		ent.CleanUp();
+		return Plugin_Continue;
+	}
+
 	gB_GravityActivated[activator] = true;
 	float grav = GetEntityGravity(activator);
 	// booster already activated on player before we could find the proper gravity, use default then.
@@ -192,30 +105,42 @@ public Action OnTrigger( const char[] output, int caller, int activator, float d
 	}
 	
 	SetEntityGravity(activator, gravity.value);
-	
-	float speed = GetEntPropFloat(activator, Prop_Data, "m_flLaggedMovementValue");
-	gF_GravityDeactivateTime[activator] = GetEngineTime() + (gravity.value / speed);
-		
-	return Plugin_Handled;
-}
+	gF_CurrentGravity[activator] = gravity.value;
 
-public Action OnPlayerRunCmd(int client)
-{
-	if(gB_GravityActivated[client] && (GetEngineTime() >= gF_GravityDeactivateTime[client]))
-	{
-		SetEntityGravity(client, gF_OldGravity[client]); // should this reset to old gravity, or the gravity set by trigger_multiple?
-		gB_GravityActivated[client] = false;
-	}
+	gF_GravityDeactivateTime[activator] = gravity.delay;
+	
+
+	ent.CleanUp();
 	return Plugin_Continue;
 }
 
-public Action Command_Init(int client, int args)
+public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3], float angles[3], int &weapon, int &subtype, int &cmdnum, int &tickcount, int &seed, int mouse[2])
 {
-	Init();
-	return Plugin_Handled;
+	static int s_LastTick[MAXPLAYERS+1];
+
+	if(gB_GravityActivated[client])
+	{
+		float speed = GetEntPropFloat(client, Prop_Data, "m_flLaggedMovementValue");
+
+		gF_GravityDeactivateTime[client] -= (GetTickInterval() * speed);
+
+		if(gF_GravityDeactivateTime[client] <= 0.0)
+		{
+			SetEntityGravity(client, gF_OldGravity[client]); // should this reset to old gravity, or the gravity set by trigger_multiple?
+			gB_GravityActivated[client] = false;
+			gF_CurrentGravity[client] = 1.0;
+		}
+		else
+		{
+			SetEntityGravity(client, gF_CurrentGravity[client]); // should this reset to old gravity, or the gravity set by trigger_multiple?
+		}
+	}
+
+	s_LastTick[client] = tickcount;
+	return Plugin_Continue;
 }
 
-stock void HookTriggers()
+void HookTriggers()
 {
 	HookEntityOutput("trigger_multiple", "OnTrigger", OnTrigger);
 	HookEntityOutput("trigger_multiple", "OnStartTouch", OnTrigger);
@@ -223,34 +148,32 @@ stock void HookTriggers()
 	HookEntityOutput("trigger_multiple", "OnEndTouch", OnTrigger);
 }
 
-public bool ParseEntity(ArrayList list, gravity_t grav)
+bool ParseEntity(Entity ent, gravity_t grav)
 {	
 	bool foundLowGrav = false;
 	bool foundNormalGrav = false;
 	float normalGravDelay;
-	
+	int gravCount = 0;
 	// Loop through the output list
-	for(int i = 0; i < list.Length; ++i)
+	for(int i = 0; i < ent.OutputList.Length; ++i)
 	{
 		// Get the full output list at the current index
-		char buffer[256];
-		list.GetString(i, buffer, 256);
-		// Break it up into more managable parts
-		char entity[OUTPUTSIZE][64];
-		ExplodeString(buffer, ";", entity, OUTPUTSIZE, 64);
+		Output out;
+		ent.OutputList.GetArray(i, out);
 
-		if(StrEqual(entity[TARGETENTITY], "!activator", false)) // being done on player triggering action, dont interfere if it isnt
+		if(StrEqual(out.Target, "!activator", false)) // being done on player triggering action, dont interfere if it isnt
 		{
 			// Break the PARAMETERS into 2 strings, 0 for gravity and 1 for it's value
-			char params[2][32];
-			ExplodeString(entity[PARAMETERS], " ", params, 2, 32);
+			char params[2][MEMBER_SIZE];
+			ExplodeString(out.Parameters, " ", params, 2, MEMBER_SIZE);
 
 			if(StrEqual(params[0], "gravity", false)) // Has an output with gravity
 			{
+				++gravCount;
 				float gravity = StringToFloat(params[1]);
 				if(gravity == 1.0)
 				{
-					normalGravDelay = StringToFloat(entity[DELAY]);
+					normalGravDelay = out.Delay;
 					foundNormalGrav = true;
 					if(normalGravDelay < 0.0)
 					{
@@ -265,31 +188,19 @@ public bool ParseEntity(ArrayList list, gravity_t grav)
 			}
 		}
 	}
-	if(foundNormalGrav && foundLowGrav)
+	// If this trigger brush is responsible for both low grav and normal grav and isn't doing some weird thing with setting mutliple gravities then we can use it.
+	if(foundNormalGrav && foundLowGrav && gravCount == 2)
 	{
 		grav.delay = normalGravDelay;
+		return true;
 	}
-	
-	return true;
+	return false;
 }
 
-/* Deletes the handles of an arraylist containing arraylists */
-stock void ClearArrayList(ArrayList list)
+public Action Command_BooserFix(int client, int args)
 {
-	for(int i = 0; i < list.Length; ++i)
-	{
-		ArrayList temp = list.Get(i);
-		delete temp;
-	}
-}
+	gB_Enabled[client] = !gB_Enabled[client];
 
-/* Deletes the handles of an arraylist containing arraylists that contain arraylists */
-stock void ClearArrayListList(ArrayList list)
-{
-	for(int i = 0; i < list.Length; ++i)
-	{
-		ArrayList a = list.Get(i);
-		ClearArrayList(a);
-		delete a;
-	}
+	ReplyToCommand(client, "Toggled gravity booster fix (%i)", gB_Enabled[client]);
+	return Plugin_Handled;
 }
