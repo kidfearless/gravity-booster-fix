@@ -4,26 +4,36 @@
 #include <shavit>
 #include <output_info_plugin>
 
-bool gB_GravityActivated[MAXPLAYERS];
-bool gB_Late;
-bool gB_Enabled[MAXPLAYERS] = {true, ...};
-
-float gF_GravityDeactivateTime[MAXPLAYERS];
-float gF_OldGravity[MAXPLAYERS] = {1.0, ...};
-float gF_CurrentGravity[MAXPLAYERS] = {1.0, ...};
-
 enum struct gravity_t
 {
-	float delay;
-	float value;
+	float time;
+	float curGravity;
+	float oldGravity;
+	bool active;
+
+	void Clear()
+	{
+		this.time = 0.0;
+		this.curGravity = 1.0;
+		this.oldGravity = 1.0;
+		this.active = false;
+	}
 }
+
+bool gB_Late;
+bool gB_Enabled[MAXPLAYERS+1] = {true, ...};
+
+ArrayList gA_Checkpoints[MAXPLAYERS+1];
+
+gravity_t g_Gravity[MAXPLAYERS+1];
+
 
 public Plugin myinfo = 
 {
 	name = "Gravity Booster Fix",
 	author = "KiD Fearless",
-	description = "Changes booster boost time depending on players current timescale... Code heavily based off slidybats gravity booster fix plugin.",
-	version = "2.0",
+	description = "Changes booster boost time depending on players current timescale",
+	version = "2.1",
 	url = "http://steamcommunity.com/id/kidfearless"
 };
 
@@ -46,11 +56,10 @@ public void OnPluginStart()
 
 public void OnClientPutInServer(int client)
 {
-	gB_GravityActivated[client] = false;
-	gF_OldGravity[client] = 1.0;
-	gF_CurrentGravity[client] = 1.0;
-	gF_GravityDeactivateTime[client] = 0.0;
+	g_Gravity[client].Clear();
 	gB_Enabled[client] = true;
+	delete gA_Checkpoints[client];
+	gA_Checkpoints[client] = new ArrayList(sizeof(gravity_t));
 }
 
 public void OnEntitiesReady()
@@ -58,19 +67,81 @@ public void OnEntitiesReady()
 	HookTriggers();
 }
 
-public Action OnTrigger( const char[] output, int caller, int activator, float delay )
+public Action Shavit_OnSave(int client, int index, bool overflow)
 {
+	ArrayList checkPoint = gA_Checkpoints[client];
+	gravity_t grav;
+	grav = g_Gravity[client];
+
+	// Add the current gravity onto it if it's a normal checkpoint
+	if(index == checkPoint.Length)
+	{
+		checkPoint.PushArray(grav);
+	}
+	// If it somehow skipped a checkpoint then we try to create some empty ones
+	else if(index > checkPoint.Length)
+	{
+		int oldSize = checkPoint.Length;
+		checkPoint.Resize(index + 1);
+		gravity_t emptyGrav;
+		emptyGrav.Clear();
+
+		for(int i = oldSize; i < checkPoint.Length; ++i)
+		{
+			checkPoint.SetArray(i, emptyGrav);
+		}
+
+		checkPoint.SetArray(index, grav);
+	}
+	// If they somehow went back then we just roll with it and update that index
+	else
+	{
+		checkPoint.SetArray(index, grav);
+	}
+
+	// If we're overflowing then we need to remove the first checkpoint to prevent misalignment
+	if(overflow)
+	{
+		checkPoint.Erase(0);
+	}
+
+	return Plugin_Continue;
+}
+
+public Action Shavit_OnTeleport(int client, int index)
+{
+	// don't set the gravity if they have it disabled
+	if(!gB_Enabled[client])
+	{
+		return Plugin_Continue;
+	}
+
+	// don't try to read any gravities that don't exist
+	ArrayList checkPoint = gA_Checkpoints[client];
+	if(index >= checkPoint.Length)
+	{
+		return Plugin_Continue;
+	}
+	
+	// get the gravity on that index and set it as the current
+	gravity_t grav;
+	checkPoint.GetArray(index, grav);
+	g_Gravity[client] = grav;
+
+	return Plugin_Continue;
+}
+
+public Action OnTrigger(const char[] output, int caller, int activator, float delay)
+{
+	// TODO: only set the gravity players gravity when they activate the output that sets it, not before.
+
 	if(!IsValidEntity(caller) || !(0 < activator <= MaxClients) || !IsValidEntity(activator))
 	{
 		// LogError("INVALID ENTITY... IGNORING TRIGGER");
 		return Plugin_Continue;
 	}
-	if(GetEntPropFloat(activator, Prop_Data, "m_flLaggedMovementValue") == 1.0)
-	{
-		// LogError("ACTIVATOR IS MOVING NORMALLY... IGNORING TRIGGER");
-		return Plugin_Continue;
-	}
-	if(!gB_Enabled[activator])
+	// don't check if we already got our gravity or don't want to run the plugin
+	if(!gB_Enabled[activator] || g_Gravity[activator].active)
 	{
 		// LogError("ACTIVATOR DOESN'T WANT THE FIX... IGNORING TRIGGER");
 		return Plugin_Continue;
@@ -78,65 +149,50 @@ public Action OnTrigger( const char[] output, int caller, int activator, float d
 
 	Entity ent;
 
-	if(!GetOutputEntity(caller, ent))
+	if(!GetOutputEntity(caller, ent) || ent.OutputList.Length == 0)
 	{
-		// LogError("BAD ENTITY HANDLE RETURNED... IGNORING TRIGGER");
+		// LogError("BAD OUTPUT ENTITY RETURNED... IGNORING TRIGGER");
 		return Plugin_Continue;
 	}
 
-	gravity_t gravity;
-	if(!ParseEntity(ent, gravity))
+	// Check to see if booster contains both set and reset gravity outputs
+	if(!ParseEntity(ent, g_Gravity[activator]))
 	{
 		// LogError("COULD NOT FIND VALID BOOSTER... IGNORING TRIGGER");
 		ent.CleanUp();
+		g_Gravity[activator].Clear();
 		return Plugin_Continue;
 	}
 
-	gB_GravityActivated[activator] = true;
-	float grav = GetEntityGravity(activator);
-	// booster already activated on player before we could find the proper gravity, use default then.
-	if(gravity.value != grav)
-	{
-		gF_OldGravity[activator] = grav;
-	}
-	else
-	{
-		gF_OldGravity[activator] = 1.0;
-	}
+	g_Gravity[activator].active = true;
+	g_Gravity[activator].oldGravity = GetEntityGravity(activator);
 	
-	SetEntityGravity(activator, gravity.value);
-	gF_CurrentGravity[activator] = gravity.value;
-
-	gF_GravityDeactivateTime[activator] = gravity.delay;
 	
+	SetEntityGravity(activator, g_Gravity[activator].curGravity);
 
 	ent.CleanUp();
+
 	return Plugin_Continue;
 }
 
 public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3], float angles[3], int &weapon, int &subtype, int &cmdnum, int &tickcount, int &seed, int mouse[2])
 {
-	static int s_LastTick[MAXPLAYERS+1];
-
-	if(gB_GravityActivated[client])
+	if(gB_Enabled[client] && g_Gravity[client].active)
 	{
-		float speed = GetEntPropFloat(client, Prop_Data, "m_flLaggedMovementValue");
-
-		gF_GravityDeactivateTime[client] -= (GetTickInterval() * speed);
-
-		if(gF_GravityDeactivateTime[client] <= 0.0)
+		if(g_Gravity[client].time <= 0.0)
 		{
-			SetEntityGravity(client, gF_OldGravity[client]); // should this reset to old gravity, or the gravity set by trigger_multiple?
-			gB_GravityActivated[client] = false;
-			gF_CurrentGravity[client] = 1.0;
+			SetEntityGravity(client, g_Gravity[client].oldGravity);
+			g_Gravity[client].active = false;
 		}
 		else
 		{
-			SetEntityGravity(client, gF_CurrentGravity[client]); // should this reset to old gravity, or the gravity set by trigger_multiple?
+			float speed = GetEntPropFloat(client, Prop_Data, "m_flLaggedMovementValue");
+	
+			g_Gravity[client].time -= (GetTickInterval() * speed);
+			SetEntityGravity(client, g_Gravity[client].curGravity);
 		}
 	}
-
-	s_LastTick[client] = tickcount;
+	
 	return Plugin_Continue;
 }
 
@@ -150,8 +206,8 @@ void HookTriggers()
 
 bool ParseEntity(Entity ent, gravity_t grav)
 {	
-	bool foundLowGrav = false;
-	bool foundNormalGrav = false;
+	bool foundLowGrav;
+	bool foundNormalGrav;
 	float normalGravDelay;
 	int gravCount = 0;
 	// Loop through the output list
@@ -182,7 +238,7 @@ bool ParseEntity(Entity ent, gravity_t grav)
 				}
 				else if(gravity < 1.0)
 				{
-					grav.value = gravity;
+					grav.curGravity = gravity;
 					foundLowGrav = true;
 				}
 			}
@@ -191,7 +247,7 @@ bool ParseEntity(Entity ent, gravity_t grav)
 	// If this trigger brush is responsible for both low grav and normal grav and isn't doing some weird thing with setting mutliple gravities then we can use it.
 	if(foundNormalGrav && foundLowGrav && gravCount == 2)
 	{
-		grav.delay = normalGravDelay;
+		grav.time = normalGravDelay;
 		return true;
 	}
 	return false;
