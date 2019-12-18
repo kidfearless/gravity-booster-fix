@@ -151,6 +151,7 @@ public Action OnTrigger(const char[] output, int caller, int activator, float de
 
 	if(!GetOutputEntity(caller, ent) || ent.OutputList.Length == 0)
 	{
+		ent.CleanUp();
 		// LogError("BAD OUTPUT ENTITY RETURNED... IGNORING TRIGGER");
 		return Plugin_Continue;
 	}
