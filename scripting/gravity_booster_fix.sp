@@ -33,7 +33,7 @@ public Plugin myinfo =
 	name = "Gravity Booster Fix",
 	author = "KiD Fearless",
 	description = "Changes booster boost time depending on players current timescale",
-	version = "2.1",
+	version = "2.2",
 	url = "http://steamcommunity.com/id/kidfearless"
 };
 
@@ -47,9 +47,14 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 public void OnPluginStart()
 {
 	RegConsoleCmd("sm_booster_fix", Command_BooserFix, "Disable the gravity booster fix");
+	RegConsoleCmd("sm_boosterfix", Command_BooserFix, "Disable the gravity booster fix");
 
 	if(gB_Late)
 	{
+		for(int i = 1; i <= MaxClients; ++i)
+		{
+			OnClientPutInServer(i);
+		}
 		HookTriggers();
 	}
 }
@@ -118,7 +123,8 @@ public Action Shavit_OnTeleport(int client, int index)
 
 	// don't try to read any gravities that don't exist
 	ArrayList checkPoint = gA_Checkpoints[client];
-	if(index >= checkPoint.Length)
+	// htf did I trigger this
+	if(!checkPoint || index >= checkPoint.Length)
 	{
 		return Plugin_Continue;
 	}
@@ -140,8 +146,8 @@ public Action OnTrigger(const char[] output, int caller, int activator, float de
 		// LogError("INVALID ENTITY... IGNORING TRIGGER");
 		return Plugin_Continue;
 	}
-	// don't check if we already got our gravity or don't want to run the plugin
-	if(!gB_Enabled[activator] || g_Gravity[activator].active)
+	// don't check if they don't want to run the plugin
+	if(!gB_Enabled[activator])
 	{
 		// LogError("ACTIVATOR DOESN'T WANT THE FIX... IGNORING TRIGGER");
 		return Plugin_Continue;
@@ -156,20 +162,37 @@ public Action OnTrigger(const char[] output, int caller, int activator, float de
 		return Plugin_Continue;
 	}
 
-	// Check to see if booster contains both set and reset gravity outputs
-	if(!ParseEntity(ent, g_Gravity[activator]))
+	gravity_t temp;
+	temp.Clear();
+
+	if(!g_Gravity[activator].active)
 	{
-		// LogError("COULD NOT FIND VALID BOOSTER... IGNORING TRIGGER");
-		ent.CleanUp();
-		g_Gravity[activator].Clear();
+		// PrintToConsoleAll("gravity not active");
+
+		if(!ParseAsGravityBooster(ent, g_Gravity[activator]))
+		{
+			// PrintToConsoleAll("!ParseAsGravityBooster(ent, g_Gravity[activator])");
+
+			// LogError("COULD NOT FIND VALID BOOSTER... IGNORING TRIGGER");
+			ent.CleanUp();
+			// I guess what I was thinking was that I've already checked if we've activated a gravity booster above
+			// so we're sorta just using the global variable as a temp variable.
+			g_Gravity[activator].Clear();
+			return Plugin_Continue;
+		}
+
+		g_Gravity[activator].active = true;
+		g_Gravity[activator].oldGravity = GetEntityGravity(activator);
+		
+		
+		SetEntityGravity(activator, g_Gravity[activator].curGravity);
+	}
+	else if(ParseAsGravityReset(ent, temp))
+	{
+		// PrintToConsoleAll("(ParseAsGravityReset(ent, temp)), Time: %f", temp.time);
+		g_Gravity[activator].time = temp.time;
 		return Plugin_Continue;
 	}
-
-	g_Gravity[activator].active = true;
-	g_Gravity[activator].oldGravity = GetEntityGravity(activator);
-	
-	
-	SetEntityGravity(activator, g_Gravity[activator].curGravity);
 
 	ent.CleanUp();
 
@@ -183,13 +206,15 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 		if(g_Gravity[client].time <= 0.0)
 		{
 			SetEntityGravity(client, g_Gravity[client].oldGravity);
+			// PrintToConsole(client, "gravity: %f", g_Gravity[client].oldGravity);
+
 			g_Gravity[client].active = false;
 		}
 		else
 		{
 			float speed = GetEntPropFloat(client, Prop_Data, "m_flLaggedMovementValue");
-	
 			g_Gravity[client].time -= (GetTickInterval() * speed);
+			// PrintToConsole(client, "time: %f", g_Gravity[client].time);
 			SetEntityGravity(client, g_Gravity[client].curGravity);
 		}
 	}
@@ -205,7 +230,7 @@ void HookTriggers()
 	HookEntityOutput("trigger_multiple", "OnEndTouch", OnTrigger);
 }
 
-bool ParseEntity(Entity ent, gravity_t grav)
+bool ParseAsGravityBooster(Entity ent, gravity_t grav)
 {	
 	bool foundLowGrav;
 	bool foundNormalGrav;
@@ -251,6 +276,58 @@ bool ParseEntity(Entity ent, gravity_t grav)
 		grav.time = normalGravDelay;
 		return true;
 	}
+	return false;
+}
+
+// Who the fuck has a three part gravity booster where the booster is in charge of resetting their gravity as well as a separate brush.
+// Some shitter named Tony Montana, someone should take away his copy of hammer
+bool ParseAsGravityReset(Entity ent, gravity_t grav)
+{
+	bool foundNormalGrav;
+	float normalGravDelay;
+	int gravCount = 0;
+	// Loop through the output list
+	for(int i = 0; i < ent.OutputList.Length; ++i)
+	{
+		// Get the full output list at the current index
+		Output out;
+		ent.OutputList.GetArray(i, out);
+
+		if(StrEqual(out.Target, "!activator", false)) // being done on player triggering action, dont interfere if it isnt
+		{
+			// Break the PARAMETERS into 2 strings, 0 for gravity and 1 for it's value
+			char params[2][MEMBER_SIZE];
+			ExplodeString(out.Parameters, " ", params, 2, MEMBER_SIZE);
+
+			if(StrEqual(params[0], "gravity", false)) // Has an output with gravity
+			{
+				++gravCount;
+				float gravity = StringToFloat(params[1]);
+				// I swear to god tony, if you make some gay map where you have to activate another booster while still being boosted i'm coming for you.
+				if(gravity == 1.0)
+				{
+					normalGravDelay = out.Delay;
+					foundNormalGrav = true;
+					if(normalGravDelay < 0.0)
+					{
+						normalGravDelay = 0.0;
+					}
+				}
+				else
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	if(foundNormalGrav && gravCount == 1)
+	{
+		// update the time remaining, but not the gravity
+		grav.time = normalGravDelay;
+		return true;
+	}
+
 	return false;
 }
 
