@@ -10,6 +10,7 @@ enum struct gravity_t
 	float curGravity;
 	float oldGravity;
 	bool active;
+	float delay;
 
 	void Clear()
 	{
@@ -184,8 +185,8 @@ public Action OnTrigger(const char[] output, int caller, int activator, float de
 		g_Gravity[activator].active = true;
 		g_Gravity[activator].oldGravity = GetEntityGravity(activator);
 		
-		
-		SetEntityGravity(activator, g_Gravity[activator].curGravity);
+		// Don't set in case of gravity delays
+		// SetEntityGravity(activator, g_Gravity[activator].curGravity);
 	}
 	else if(ParseAsGravityReset(ent, temp))
 	{
@@ -201,21 +202,39 @@ public Action OnTrigger(const char[] output, int caller, int activator, float de
 
 public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3], float angles[3], int &weapon, int &subtype, int &cmdnum, int &tickcount, int &seed, int mouse[2])
 {
+/*
+	static float s_fLastHeight[MAXPLAYERS+1] = {view_as<float>(cellmax), ...};
+	float height[3];
+	GetClientEyePosition(client, height);
+	if(height[2] < s_fLastHeight[client])
+	{
+		PrintToConsole(client, "max height: %f", s_fLastHeight[client]);
+	}
+	s_fLastHeight[client] = height[2]; */
+	
 	if(gB_Enabled[client] && g_Gravity[client].active)
 	{
-		if(g_Gravity[client].time <= 0.0)
-		{
-			SetEntityGravity(client, g_Gravity[client].oldGravity);
-			// PrintToConsole(client, "gravity: %f", g_Gravity[client].oldGravity);
+		float speed = GetEntPropFloat(client, Prop_Data, "m_flLaggedMovementValue");
 
-			g_Gravity[client].active = false;
+		if(g_Gravity[client].delay <= 0.0)
+		{
+			if(g_Gravity[client].time <= 0.0)
+			{
+				SetEntityGravity(client, g_Gravity[client].oldGravity);
+				// PrintToConsole(client, "gravity: %f", g_Gravity[client].oldGravity);
+				
+				g_Gravity[client].active = false;
+			}
+			else
+			{
+				g_Gravity[client].time -= (GetTickInterval() * speed);
+				// PrintToConsole(client, "time: %f", g_Gravity[client].time);
+				SetEntityGravity(client, g_Gravity[client].curGravity);
+			}
 		}
 		else
 		{
-			float speed = GetEntPropFloat(client, Prop_Data, "m_flLaggedMovementValue");
-			g_Gravity[client].time -= (GetTickInterval() * speed);
-			// PrintToConsole(client, "time: %f", g_Gravity[client].time);
-			SetEntityGravity(client, g_Gravity[client].curGravity);
+			g_Gravity[client].delay -= (GetTickInterval() * speed);
 		}
 	}
 	
@@ -265,6 +284,10 @@ bool ParseAsGravityBooster(Entity ent, gravity_t grav)
 				else if(gravity < 1.0)
 				{
 					grav.curGravity = gravity;
+					// Holy shit, a booster with a .1 second delay will flucuate 20-30 units.
+					// Fuck tony montana and his gay boosters
+					// bhop_lego3 when
+					grav.delay = out.Delay;
 					foundLowGrav = true;
 				}
 			}
