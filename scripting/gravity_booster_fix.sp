@@ -3,6 +3,7 @@
 #include <sdkhooks>
 #include <shavit>
 #include <output_info_plugin>
+#include <kid_tas_api>
 
 enum struct gravity_t
 {
@@ -211,10 +212,16 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 		PrintToConsole(client, "max height: %f", s_fLastHeight[client]);
 	}
 	s_fLastHeight[client] = height[2]; */
+
+	if(!ShouldProcessFrame(client))
+	{
+		return Plugin_Continue;
+	}
 	
 	if(gB_Enabled[client] && g_Gravity[client].active)
 	{
 		float speed = GetEntPropFloat(client, Prop_Data, "m_flLaggedMovementValue");
+		float speed = GetClientTimescale(client);
 
 		if(g_Gravity[client].delay <= 0.0)
 		{
@@ -360,4 +367,27 @@ public Action Command_BooserFix(int client, int args)
 
 	ReplyToCommand(client, "Toggled gravity booster fix (%i)", gB_Enabled[client]);
 	return Plugin_Handled;
+}
+
+stock float GetClientTimescale(int client)
+{
+	if(GetFeatureStatus(FeatureType_Native, "TAS_Enabled") == FeatureStatus_Available)
+	{
+		if(TAS_Enabled(client))
+		{
+			return TAS_GetCurrentTimescale(client);
+		}
+	}
+	
+	return GetEntPropFloat(client, Prop_Data, "m_flLaggedMovementValue");
+}
+
+stock bool ShouldProcessFrame(int client)
+{
+	if(GetFeatureStatus(FeatureType_Native, "TAS_ShouldProcessFrame") == FeatureStatus_Available)
+	{
+		return TAS_ShouldProcessFrame(client);
+	}
+
+	return true;
 }
