@@ -220,7 +220,6 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 	
 	if(gB_Enabled[client] && g_Gravity[client].active)
 	{
-		float speed = GetEntPropFloat(client, Prop_Data, "m_flLaggedMovementValue");
 		float speed = GetClientTimescale(client);
 
 		if(g_Gravity[client].delay <= 0.0)
