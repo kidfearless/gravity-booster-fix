@@ -374,7 +374,7 @@ stock float GetClientTimescale(int client)
 	{
 		if(TAS_Enabled(client))
 		{
-			return TAS_GetCurrentTimescale(client);
+			return 1.0;
 		}
 	}
 	
